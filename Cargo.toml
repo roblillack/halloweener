@@ -1,0 +1,19 @@
+[package]
+name = "halloweener"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+crossterm = "0.29"
+libc = "0.2.191"
+rand = "0.10.3"
+ratatui = "0.30"
+rodio = "0.23"
+signal-hook = "0.4.5"
+unicode-width = "0.2.3"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+# Keep unwinding: decoder panics on damaged files are caught and turned into "track ended".
+panic = "unwind"
