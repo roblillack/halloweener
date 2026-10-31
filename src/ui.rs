@@ -19,6 +19,7 @@ const GREEN_BG: Color = Color::Indexed(22);
 const GREEN_LIGHT: Color = Color::Indexed(120);
 const RED_BG: Color = Color::Indexed(160);
 const RED_SHADOW: Color = Color::Indexed(52);
+const EYE_RED: Color = Color::Indexed(196);
 
 const ART_HEIGHT: usize = 6;
 
@@ -44,6 +45,40 @@ const DIGITS: [[&str; ART_HEIGHT]; 10] = [
     [" █████╗  ", "██╔══██╗ ", "╚██████║ ", " ╚═══██║ ", " █████╔╝ ", " ╚════╝  "],
 ];
 const COLON: [&str; ART_HEIGHT] = ["    ", "██╗ ", "╚═╝ ", "██╗ ", "╚═╝ ", "    "];
+
+/// One character per pixel: X is bone, o is a glowing eye. A pixel is two cells wide,
+/// because terminal cells are about twice as tall as they are wide.
+const SKULL: [&str; 13] = [
+    ".....XXXXX.....",
+    "...XXXXXXXXX...",
+    "..XXXXXXXXXXX..",
+    ".XXXXXXXXXXXXX.",
+    ".XXXXXXXXXXXXX.",
+    ".XXoooXXXoooXX.",
+    ".XXoooXXXoooXX.",
+    ".XXoooXXXoooXX.",
+    "..XXXXX.XXXXX..",
+    "...XXXX.XXXX...",
+    "....XXXXXXX....",
+    "....X.X.X.X....",
+    "....X.X.X.X....",
+];
+const MAX_SKULL_SCALE: usize = 3;
+
+fn skull_art() -> Vec<String> {
+    SKULL
+        .iter()
+        .map(|row| {
+            row.chars()
+                .map(|pixel| match pixel {
+                    'X' => "██",
+                    'o' => "▓▓",
+                    _ => "  ",
+                })
+                .collect()
+        })
+        .collect()
+}
 
 pub fn format_time(time: Duration) -> String {
     let total = time.as_secs();
@@ -74,12 +109,13 @@ fn art_width<S: AsRef<str>>(art: &[S]) -> usize {
 }
 
 /// Largest scale fitting the space, capped at `max`. Zero means it doesn't fit at all.
-fn fit_scale(art_width: usize, width: usize, height: usize, max: usize) -> usize {
-    (width / art_width.max(1)).min(height / ART_HEIGHT).min(max)
+fn fit_scale(art_width: usize, art_height: usize, width: usize, height: usize, max: usize) -> usize {
+    (width / art_width.max(1)).min(height / art_height.max(1)).min(max)
 }
 
 /// Renders art at a whole-number scale. At scale 1 it is plain ANSI art; beyond that
-/// box-drawing lines can't be enlarged, so they become a solid drop shadow.
+/// box-drawing lines can't be enlarged, so they become a solid drop shadow. `▓` always
+/// means a solid block in the accent color.
 fn scaled_art<S: AsRef<str>>(art: &[S], scale: usize, face: Color, shadow: Color) -> Vec<Line<'static>> {
     let mut lines = Vec::with_capacity(art.len() * scale);
     for row in art {
@@ -89,6 +125,7 @@ fn scaled_art<S: AsRef<str>>(art: &[S], scale: usize, face: Color, shadow: Color
         for c in row.as_ref().chars() {
             let (glyph, color) = match c {
                 '█' | ' ' => (c, face),
+                '▓' => ('█', shadow),
                 _ if scale == 1 => (c, face),
                 _ => ('█', shadow),
             };
@@ -180,6 +217,13 @@ fn warning_lines(view: &View, width: usize) -> Vec<Line<'static>> {
     }
 }
 
+fn volume_line(view: &View, width: usize) -> Line<'static> {
+    text_line(
+        fit_text(&format!("VOLUME {}%   ( + / - to change )", view.volume), width),
+        Style::new(),
+    )
+}
+
 fn hint_line(text: &str, width: usize, key_color: Color, text_color: Color) -> Line<'static> {
     text_line(
         fit_text(&format!("  {text}  "), width),
@@ -198,12 +242,12 @@ fn background_screen(view: &View, width: usize, height: usize) -> Vec<Line<'stat
     ));
     lines.push(Line::default());
 
-    const RESERVED: usize = 9; // the text around the digits
-    let time = big_time(&format_time(view.position));
+    const RESERVED: usize = 7; // the text below the skull
+    let skull = skull_art();
     let room = height.saturating_sub(lines.len() + RESERVED);
-    let scale = fit_scale(art_width(&time), width.saturating_sub(2), room, 2);
+    let scale = fit_scale(art_width(&skull), skull.len(), width.saturating_sub(2), room, MAX_SKULL_SCALE);
     if scale > 0 {
-        lines.extend(scaled_art(&time, scale, WHITE, BLACK));
+        lines.extend(scaled_art(&skull, scale, WHITE, EYE_RED));
         lines.push(Line::default());
     }
 
@@ -211,6 +255,7 @@ fn background_screen(view: &View, width: usize, height: usize) -> Vec<Line<'stat
     if let Some(bar) = progress_bar(view.position, view.duration, width.saturating_sub(4).min(60)) {
         lines.push(text_line(bar, Style::new().fg(GREEN_LIGHT)));
     }
+    lines.push(volume_line(view, width));
     lines.push(Line::default());
     lines.push(Line::default());
     lines.push(hint_line("Press SPACE to start the DOOR SONG", width, WHITE, GREEN_BG));
@@ -224,7 +269,7 @@ fn door_screen(view: &View, width: usize, height: usize) -> Vec<Line<'static>> {
     let room = height.saturating_sub(lines.len() + RESERVED);
     let usable_width = width.saturating_sub(2);
 
-    let banner_scale = fit_scale(art_width(&SPOOKY), usable_width, room / 2, usize::MAX);
+    let banner_scale = fit_scale(art_width(&SPOOKY), ART_HEIGHT, usable_width, room / 2, usize::MAX);
     if banner_scale > 0 {
         lines.extend(scaled_art(&SPOOKY, banner_scale, WHITE, RED_SHADOW));
     } else {
@@ -243,7 +288,7 @@ fn door_screen(view: &View, width: usize, height: usize) -> Vec<Line<'static>> {
     let time_text = format_time(view.position);
     let time = big_time(&time_text);
     let time_room = room.saturating_sub(banner_scale * ART_HEIGHT);
-    let time_scale = fit_scale(art_width(&time), usable_width, time_room, usize::MAX);
+    let time_scale = fit_scale(art_width(&time), ART_HEIGHT, usable_width, time_room, usize::MAX);
     if time_scale > 0 {
         lines.extend(scaled_art(&time, time_scale, YELLOW, RED_SHADOW));
         lines.push(Line::default());
@@ -253,6 +298,7 @@ fn door_screen(view: &View, width: usize, height: usize) -> Vec<Line<'static>> {
     if let Some(bar) = progress_bar(view.position, view.duration, width.saturating_sub(4).min(60)) {
         lines.push(text_line(bar, Style::new().fg(YELLOW)));
     }
+    lines.push(volume_line(view, width));
     lines.push(Line::default());
     lines.push(hint_line("Press SPACE to go back to background music", width, BLACK, WHITE));
     lines
@@ -276,6 +322,7 @@ mod tests {
             position: Duration::from_secs(83),
             duration: Some(Duration::from_secs(165)),
             warning,
+            volume: 65,
         }
     }
 
@@ -334,6 +381,36 @@ mod tests {
         assert!(text.contains("Thriller"));
         assert!(text.contains("01:23 / 02:45"));
         assert!(text.contains("Press SPACE"));
+        assert!(text.contains("VOLUME 65%"));
+    }
+
+    #[test]
+    fn background_screen_shows_a_red_eyed_skull_instead_of_the_timer() {
+        let buffer = render(&sample(Mode::Background, None), 190, 50);
+        let cells = || buffer.content().iter().filter(|cell| cell.symbol() == "█");
+        assert!(cells().any(|cell| cell.fg == EYE_RED), "no red eyes");
+        assert!(cells().any(|cell| cell.fg == WHITE), "no bone");
+        // The scaled skull is 90 cells wide; the big timer's digits are gone.
+        let text = text_of(&buffer);
+        assert!(!text.contains("██╗"), "big digits still on screen");
+        assert_eq!(cells().filter(|cell| cell.fg == EYE_RED).count(), 2 * 3 * 3 * 6 * 3);
+    }
+
+    #[test]
+    fn skull_fits_an_80x24_terminal() {
+        let buffer = render(&sample(Mode::Background, None), 80, 24);
+        assert!(buffer.content().iter().any(|cell| cell.fg == EYE_RED));
+        assert!(text_of(&buffer).contains("SPACE"));
+    }
+
+    #[test]
+    fn skull_rows_are_rectangular() {
+        assert!(SKULL.iter().all(|row| row.len() == SKULL[0].len()));
+    }
+
+    #[test]
+    fn door_screen_shows_the_volume() {
+        assert!(text_of(&render(&sample(Mode::Door, None), 190, 50)).contains("VOLUME 65%"));
     }
 
     #[test]

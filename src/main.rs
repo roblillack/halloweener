@@ -51,7 +51,9 @@ Options:
 
 Keys:
   SPACE           Start the door song / go back to background music
-  Ctrl+Q          Quit (the only way out; every other key is ignored)
+  + or =          Volume up
+  -               Volume down
+  Ctrl+Q          Quit (the only way out; everything else is ignored)
 
 Supported formats: mp3, flac, ogg, wav, m4a, mp4";
 
@@ -73,16 +75,14 @@ fn main() -> ExitCode {
 fn supervise(args: &[String]) -> ExitCode {
     let stop = Arc::new(AtomicBool::new(false));
     register_stop_signals(&stop);
-    let exe = match env::current_exe() {
-        Ok(exe) => exe,
-        Err(err) => {
-            eprintln!("error: cannot find my own executable: {err}");
-            return ExitCode::from(EXIT_BAD_SETUP);
-        }
-    };
-
     loop {
-        let mut child = match Command::new(&exe).args(args).env(WORKER_ENV, "1").spawn() {
+        let spawn = |exe: PathBuf| Command::new(exe).args(args).env(WORKER_ENV, "1").spawn();
+        // If the binary was rebuilt or removed since we started, its path is gone, but
+        // the kernel still has the running one. Keeps crash restarts working regardless.
+        let spawned = env::current_exe()
+            .and_then(spawn)
+            .or_else(|_| spawn(PathBuf::from("/proc/self/exe")));
+        let mut child = match spawned {
             Ok(child) => child,
             Err(err) => {
                 eprintln!("error: cannot start player: {err}");
@@ -344,6 +344,8 @@ fn run(setup: Setup, heartbeat: &AtomicU64) -> io::Result<()> {
                     KeyCode::Char(' ') => {
                         app.on_space(Instant::now());
                     }
+                    KeyCode::Char('+' | '=') => app.volume_up(),
+                    KeyCode::Char('-') => app.volume_down(),
                     KeyCode::Char('q' | 'Q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         return Ok(());
                     }

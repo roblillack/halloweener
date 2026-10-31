@@ -44,6 +44,8 @@ pub trait Backend {
     /// Replaces whatever is in `slot`. Returns the track length, if known.
     fn load(&mut self, slot: Slot, source: &TrackSource, at: Duration) -> Result<Option<Duration>, String>;
     fn set_paused(&mut self, slot: Slot, paused: bool);
+    /// Scales everything, immediately and for tracks loaded later.
+    fn set_master_gain(&mut self, gain: f32);
     fn stop(&mut self, slot: Slot);
     fn position(&self, slot: Slot) -> Duration;
     fn finished(&self, slot: Slot) -> bool;
@@ -141,6 +143,7 @@ struct Playing {
 
 pub struct Rodio {
     background_volume: f32,
+    master_gain: f32,
     sink: Option<MixerDeviceSink>,
     device_error: Option<Arc<AtomicBool>>,
     background: Option<Playing>,
@@ -150,7 +153,21 @@ pub struct Rodio {
 impl Rodio {
     /// `background_volume` is a linear factor; the door song always plays at 1.0.
     pub fn new(background_volume: f32) -> Self {
-        Self { background_volume, sink: None, device_error: None, background: None, door: None }
+        Self {
+            background_volume,
+            master_gain: 1.0,
+            sink: None,
+            device_error: None,
+            background: None,
+            door: None,
+        }
+    }
+
+    fn gain(&self, slot: Slot) -> f32 {
+        match slot {
+            Slot::Background => self.master_gain * self.background_volume,
+            Slot::Door => self.master_gain,
+        }
     }
 
     fn slot(&self, slot: Slot) -> &Option<Playing> {
@@ -222,9 +239,7 @@ impl Backend for Rodio {
             }
         }
         let player = Player::connect_new(sink.mixer());
-        if slot == Slot::Background {
-            player.set_volume(self.background_volume);
-        }
+        player.set_volume(self.gain(slot));
         player.append(PanicSafe { inner: decoder, dead: false });
         *self.slot_mut(slot) = Some(Playing { player, offset });
         Ok(duration)
@@ -236,6 +251,15 @@ impl Backend for Rodio {
                 playing.player.pause();
             } else {
                 playing.player.play();
+            }
+        }
+    }
+
+    fn set_master_gain(&mut self, gain: f32) {
+        self.master_gain = gain;
+        for slot in [Slot::Background, Slot::Door] {
+            if let Some(playing) = self.slot(slot) {
+                playing.player.set_volume(self.gain(slot));
             }
         }
     }

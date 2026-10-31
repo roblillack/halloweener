@@ -2,7 +2,7 @@
 
 Fullscreen terminal music player for a Halloween door kiosk.
 
-- **Dark green screen:** background music, either a folder on shuffle or one looping file.
+- **Dark green screen with a red-eyed skull:** background music, either a folder on shuffle or one looping file.
 - **SPACE:** pauses it and plays the door song on a **red SPOOKY screen**.
 - **SPACE again, or the door song ending:** background music continues exactly where it stopped.
 
@@ -28,13 +28,25 @@ halloweener --background-volume 50 ~/Music/halloween ~/Music/spooky-scary-skelet
 
 The value is 0-100 and scales the signal level, so 33 is about 10 dB quieter, which
 most people hear as roughly half as loud.
-Overall loudness stays with the system volume.
+
+## Master volume
+
+`+` or `=` turns everything up and `-` turns it down, in 5% steps, on either screen.
+The current value is always on screen. It keeps the balance between background and
+door song, and can only go down from the system volume, so set the system volume to
+the loudest you'd ever want. Each step is an even change by ear: 50% is a quarter of
+the signal level, about 12 dB quieter.
+
+At 0% a yellow MUTED warning appears, until `+` turns it back up. The volume isn't
+saved: every start, including an automatic restart after a crash, begins at 100%.
 
 ## Keys
 
 | Key      | Action                                                |
 |----------|-------------------------------------------------------|
 | `SPACE`  | Start the door song / go back to background music      |
+| `+`, `=` | Volume up                                              |
+| `-`      | Volume down                                            |
 | `Ctrl+Q` | Quit. Deliberately not shown on screen                 |
 
 Everything else, including `Ctrl+C`, is ignored. SPACE only registers after the key

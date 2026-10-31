@@ -20,6 +20,14 @@ const NO_MUSIC_RETRY: Duration = Duration::from_secs(5);
 /// A track ending sooner than this counts as a failure, which keeps a folder of
 /// broken files from spinning.
 const MIN_HEALTHY_PLAY: Duration = Duration::from_secs(1);
+const VOLUME_STEP: u8 = 5;
+
+/// Squared, because hearing is logarithmic: this makes each step at the volume
+/// keys sound like a similar change, where a linear scale barely moves near the top.
+fn master_gain(percent: u8) -> f32 {
+    let fraction = f32::from(percent) / 100.0;
+    fraction * fraction
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -49,6 +57,7 @@ pub struct View<'a> {
     pub position: Duration,
     pub duration: Option<Duration>,
     pub warning: Option<&'static str>,
+    pub volume: u8,
 }
 
 pub struct App<B: Backend> {
@@ -63,6 +72,7 @@ pub struct App<B: Backend> {
     next_open_at: Option<Instant>,
     last_space: Option<Instant>,
     stall: Option<(Duration, Instant)>,
+    volume: u8,
 }
 
 impl<B: Backend> App<B> {
@@ -79,7 +89,21 @@ impl<B: Backend> App<B> {
             next_open_at: None,
             last_space: None,
             stall: None,
+            volume: 100,
         }
+    }
+
+    pub fn volume_up(&mut self) {
+        self.set_volume(self.volume.saturating_add(VOLUME_STEP).min(100));
+    }
+
+    pub fn volume_down(&mut self) {
+        self.set_volume(self.volume.saturating_sub(VOLUME_STEP));
+    }
+
+    fn set_volume(&mut self, volume: u8) {
+        self.volume = volume;
+        self.backend.set_master_gain(master_gain(volume));
     }
 
     /// Call for every SPACE press and auto-repeat. Returns whether it switched modes.
@@ -271,6 +295,8 @@ impl<B: Backend> App<B> {
     pub fn view(&self) -> View<'_> {
         let warning = if !self.backend.is_open() {
             Some("NO SOUND DEVICE - retrying...")
+        } else if self.volume == 0 {
+            Some("MUTED - press + to turn the volume up")
         } else if self.no_music && self.mode == Mode::Background {
             Some("NO PLAYABLE MUSIC - retrying...")
         } else {
@@ -286,6 +312,7 @@ impl<B: Backend> App<B> {
             position: track.map_or(Duration::ZERO, |t| t.position),
             duration: track.and_then(|t| t.duration),
             warning,
+            volume: self.volume,
         }
     }
 }
@@ -306,6 +333,7 @@ mod tests {
         finished: HashMap<&'static str, bool>,
         broken: Vec<&'static str>,
         loads: usize,
+        gain: f32,
     }
 
     fn key(slot: Slot) -> &'static str {
@@ -352,6 +380,9 @@ mod tests {
             if let Some(entry) = self.loaded.get_mut(key(slot)) {
                 entry.2 = paused;
             }
+        }
+        fn set_master_gain(&mut self, gain: f32) {
+            self.gain = gain;
         }
         fn stop(&mut self, slot: Slot) {
             self.loaded.remove(key(slot));
@@ -620,6 +651,46 @@ mod tests {
             rig.tick();
         }
         assert_eq!(rig.app.backend.loaded["bg"].1, position);
+    }
+
+    #[test]
+    fn volume_keys_step_and_stop_at_the_limits() {
+        let mut rig = Rig::new("volume", &["a.mp3"]);
+        assert_eq!(rig.app.view().volume, 100);
+        rig.app.volume_up();
+        assert_eq!(rig.app.view().volume, 100);
+        rig.app.volume_down();
+        assert_eq!(rig.app.view().volume, 95);
+        for _ in 0..30 {
+            rig.app.volume_down();
+        }
+        assert_eq!(rig.app.view().volume, 0);
+        assert_eq!(rig.app.backend.gain, 0.0);
+        rig.app.volume_up();
+        assert_eq!(rig.app.view().volume, 5);
+        assert!(rig.app.backend.gain > 0.0, "turning it up un-mutes");
+    }
+
+    #[test]
+    fn half_volume_is_a_quarter_of_the_signal_level() {
+        let mut rig = Rig::new("gain", &["a.mp3"]);
+        for _ in 0..10 {
+            rig.app.volume_down();
+        }
+        assert_eq!(rig.app.backend.gain, 0.25);
+    }
+
+    #[test]
+    fn muting_shows_a_warning_on_both_screens() {
+        let mut rig = Rig::new("mute", &["a.mp3"]);
+        rig.tick();
+        assert!(rig.app.view().warning.is_none());
+        for _ in 0..20 {
+            rig.app.volume_down();
+        }
+        assert!(rig.app.view().warning.unwrap().contains("MUTED"));
+        rig.space();
+        assert!(rig.app.view().warning.unwrap().contains("MUTED"));
     }
 
     #[test]
