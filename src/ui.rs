@@ -19,7 +19,6 @@ const GREEN_BG: Color = Color::Indexed(22);
 const GREEN_LIGHT: Color = Color::Indexed(120);
 const RED_BG: Color = Color::Indexed(160);
 const RED_SHADOW: Color = Color::Indexed(52);
-const EYE_RED: Color = Color::Indexed(196);
 
 const ART_HEIGHT: usize = 6;
 
@@ -46,7 +45,7 @@ const DIGITS: [[&str; ART_HEIGHT]; 10] = [
 ];
 const COLON: [&str; ART_HEIGHT] = ["    ", "██╗ ", "╚═╝ ", "██╗ ", "╚═╝ ", "    "];
 
-/// One character per pixel: X is bone, o is a glowing eye. A pixel is two cells wide,
+/// One character per pixel: X is bone, o is an eye. A pixel is two cells wide,
 /// because terminal cells are about twice as tall as they are wide.
 const SKULL: [&str; 13] = [
     ".....XXXXX.....",
@@ -65,19 +64,81 @@ const SKULL: [&str; 13] = [
 ];
 const MAX_SKULL_SCALE: usize = 3;
 
-fn skull_art() -> Vec<String> {
-    SKULL
+const SKULL_PIXEL_WIDTH: usize = 2;
+/// Centers of the eye sockets, in skull pixels.
+const EYES: [(f32, f32); 2] = [(4.5, 6.5), (10.5, 6.5)];
+/// Dark red through bright red to yellow.
+const EYE_RAMP: [u8; 10] = [52, 88, 124, 160, 196, 202, 208, 214, 220, 226];
+/// White through ever stronger pink, for bone lit by the eyes.
+const HALO_RAMP: [u8; 5] = [231, 224, 217, 210, 203];
+/// How far the glow reaches onto the bone, measured from an eye's center.
+const HALO_START: f32 = 1.5;
+const HALO_REACH: f32 = 2.6;
+
+/// Eye brightness from 0 to 1: a slow breath with some uneven flicker on top.
+/// Everything here stays below 1 Hz, so it smolders rather than strobes.
+fn eye_glow(elapsed: Duration) -> f32 {
+    let t = elapsed.as_secs_f32();
+    let breath = 0.5 + 0.5 * (t * std::f32::consts::TAU / 3.0).sin();
+    let flicker = 0.5 + 0.5 * (t * 5.3).sin() * (t * 1.7).sin();
+    (0.75 * breath + 0.25 * flicker).clamp(0.0, 1.0)
+}
+
+fn ramp(colors: &[u8], position: f32) -> Color {
+    let last = colors.len() - 1;
+    Color::Indexed(colors[((position.clamp(0.0, 1.0) * last as f32).round() as usize).min(last)])
+}
+
+/// Color of one cell of the skull, or None where the skull has a hole.
+fn skull_cell(pixel: u8, x: f32, y: f32, glow: f32) -> Option<Color> {
+    let distance = EYES
         .iter()
-        .map(|row| {
-            row.chars()
-                .map(|pixel| match pixel {
-                    'X' => "██",
-                    'o' => "▓▓",
-                    _ => "  ",
-                })
-                .collect()
-        })
-        .collect()
+        .map(|(eye_x, eye_y)| (x - eye_x).hypot(y - eye_y))
+        .fold(f32::MAX, f32::min);
+    match pixel {
+        b'X' => {
+            let reach = 1.0 - ((distance - HALO_START) / HALO_REACH);
+            Some(ramp(&HALO_RAMP, glow * reach))
+        }
+        b'o' => {
+            let heat = (0.3 + 0.7 * glow) * (1.0 - 0.6 * distance / 2.1);
+            Some(ramp(&EYE_RAMP, heat))
+        }
+        _ => None,
+    }
+}
+
+fn skull_lines(scale: usize, glow: f32) -> Vec<Line<'static>> {
+    let scale = scale.max(1);
+    let columns = SKULL[0].len() * SKULL_PIXEL_WIDTH * scale;
+    let mut lines = Vec::with_capacity(SKULL.len() * scale);
+    for row in 0..SKULL.len() * scale {
+        let pixels = SKULL[row / scale].as_bytes();
+        let y = (row as f32 + 0.5) / scale as f32;
+        let mut spans = Vec::new();
+        let mut run = String::new();
+        let mut run_color = None;
+        for column in 0..columns {
+            let pixel = pixels[column / (SKULL_PIXEL_WIDTH * scale)];
+            let x = (column as f32 + 0.5) / (SKULL_PIXEL_WIDTH * scale) as f32;
+            let color = skull_cell(pixel, x, y, glow);
+            if color != run_color && !run.is_empty() {
+                spans.push(skull_span(std::mem::take(&mut run), run_color));
+            }
+            run_color = color;
+            run.push(if color.is_some() { '█' } else { ' ' });
+        }
+        spans.push(skull_span(run, run_color));
+        lines.push(Line::from(spans));
+    }
+    lines
+}
+
+fn skull_span(text: String, color: Option<Color>) -> Span<'static> {
+    match color {
+        Some(color) => Span::styled(text, Style::new().fg(color)),
+        None => Span::raw(text),
+    }
 }
 
 pub fn format_time(time: Duration) -> String {
@@ -114,8 +175,7 @@ fn fit_scale(art_width: usize, art_height: usize, width: usize, height: usize, m
 }
 
 /// Renders art at a whole-number scale. At scale 1 it is plain ANSI art; beyond that
-/// box-drawing lines can't be enlarged, so they become a solid drop shadow. `▓` always
-/// means a solid block in the accent color.
+/// box-drawing lines can't be enlarged, so they become a solid drop shadow.
 fn scaled_art<S: AsRef<str>>(art: &[S], scale: usize, face: Color, shadow: Color) -> Vec<Line<'static>> {
     let mut lines = Vec::with_capacity(art.len() * scale);
     for row in art {
@@ -125,7 +185,6 @@ fn scaled_art<S: AsRef<str>>(art: &[S], scale: usize, face: Color, shadow: Color
         for c in row.as_ref().chars() {
             let (glyph, color) = match c {
                 '█' | ' ' => (c, face),
-                '▓' => ('█', shadow),
                 _ if scale == 1 => (c, face),
                 _ => ('█', shadow),
             };
@@ -187,11 +246,12 @@ fn text_line(text: String, style: Style) -> Line<'static> {
     Line::styled(text, style)
 }
 
-pub fn draw(frame: &mut Frame, view: &View) {
+/// `elapsed` is the time since startup, which drives the animation.
+pub fn draw(frame: &mut Frame, view: &View, elapsed: Duration) {
     let area = frame.area();
     let (width, height) = (area.width as usize, area.height as usize);
     let (background, lines) = match view.mode {
-        Mode::Background => (GREEN_BG, background_screen(view, width, height)),
+        Mode::Background => (GREEN_BG, background_screen(view, width, height, elapsed)),
         Mode::Door => (RED_BG, door_screen(view, width, height)),
     };
 
@@ -231,7 +291,7 @@ fn hint_line(text: &str, width: usize, key_color: Color, text_color: Color) -> L
     )
 }
 
-fn background_screen(view: &View, width: usize, height: usize) -> Vec<Line<'static>> {
+fn background_screen(view: &View, width: usize, height: usize, elapsed: Duration) -> Vec<Line<'static>> {
     let bold = Style::new().add_modifier(Modifier::BOLD);
     let mut lines = warning_lines(view, width);
     lines.push(text_line(fit_text("♪  BACKGROUND MUSIC  ♪", width), Style::new().fg(GREEN_LIGHT).add_modifier(Modifier::BOLD)));
@@ -243,11 +303,11 @@ fn background_screen(view: &View, width: usize, height: usize) -> Vec<Line<'stat
     lines.push(Line::default());
 
     const RESERVED: usize = 7; // the text below the skull
-    let skull = skull_art();
+    let skull_width = SKULL[0].len() * SKULL_PIXEL_WIDTH;
     let room = height.saturating_sub(lines.len() + RESERVED);
-    let scale = fit_scale(art_width(&skull), skull.len(), width.saturating_sub(2), room, MAX_SKULL_SCALE);
+    let scale = fit_scale(skull_width, SKULL.len(), width.saturating_sub(2), room, MAX_SKULL_SCALE);
     if scale > 0 {
-        lines.extend(scaled_art(&skull, scale, WHITE, EYE_RED));
+        lines.extend(skull_lines(scale, eye_glow(elapsed)));
         lines.push(Line::default());
     }
 
@@ -309,10 +369,18 @@ mod tests {
     use super::*;
     use ratatui::{backend::TestBackend, Terminal};
 
-    fn render(view: &View, width: u16, height: u16) -> ratatui::buffer::Buffer {
+    fn render_at(view: &View, width: u16, height: u16, elapsed: Duration) -> ratatui::buffer::Buffer {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal.draw(|frame| draw(frame, view)).unwrap();
+        terminal.draw(|frame| draw(frame, view, elapsed)).unwrap();
         terminal.backend().buffer().clone()
+    }
+
+    fn render(view: &View, width: u16, height: u16) -> ratatui::buffer::Buffer {
+        render_at(view, width, height, Duration::ZERO)
+    }
+
+    fn eye_color(color: Color) -> bool {
+        matches!(color, Color::Indexed(index) if EYE_RAMP.contains(&index))
     }
 
     fn sample(mode: Mode, warning: Option<&'static str>) -> View<'static> {
@@ -385,22 +453,65 @@ mod tests {
     }
 
     #[test]
-    fn background_screen_shows_a_red_eyed_skull_instead_of_the_timer() {
+    fn background_screen_shows_a_skull_with_eyes_instead_of_the_timer() {
         let buffer = render(&sample(Mode::Background, None), 190, 50);
         let cells = || buffer.content().iter().filter(|cell| cell.symbol() == "█");
-        assert!(cells().any(|cell| cell.fg == EYE_RED), "no red eyes");
         assert!(cells().any(|cell| cell.fg == WHITE), "no bone");
-        // The scaled skull is 90 cells wide; the big timer's digits are gone.
-        let text = text_of(&buffer);
-        assert!(!text.contains("██╗"), "big digits still on screen");
-        assert_eq!(cells().filter(|cell| cell.fg == EYE_RED).count(), 2 * 3 * 3 * 6 * 3);
+        assert!(!text_of(&buffer).contains("██╗"), "big digits still on screen");
+        // Two eyes of 3x3 pixels, at scale 3 with each pixel 6 cells wide and 3 tall.
+        assert_eq!(cells().filter(|cell| eye_color(cell.fg)).count(), 2 * 9 * 6 * 3);
     }
 
     #[test]
     fn skull_fits_an_80x24_terminal() {
         let buffer = render(&sample(Mode::Background, None), 80, 24);
-        assert!(buffer.content().iter().any(|cell| cell.fg == EYE_RED));
+        assert!(buffer.content().iter().any(|cell| eye_color(cell.fg)));
         assert!(text_of(&buffer).contains("SPACE"));
+    }
+
+    #[test]
+    fn eyes_are_hottest_in_the_center_and_brighten_with_the_glow() {
+        let center = |glow| skull_cell(b'o', 4.5, 6.5, glow).unwrap();
+        let corner = skull_cell(b'o', 3.0, 5.0, 1.0).unwrap();
+        assert_eq!(center(1.0), Color::Indexed(226));
+        assert_ne!(center(0.0), center(1.0));
+        assert_ne!(corner, center(1.0));
+    }
+
+    #[test]
+    fn halo_tints_nearby_bone_only_and_vanishes_when_dim() {
+        let near = skull_cell(b'X', 2.5, 6.5, 1.0).unwrap();
+        assert_ne!(near, WHITE, "bone beside the eye should be lit");
+        assert_eq!(skull_cell(b'X', 7.5, 0.5, 1.0), Some(WHITE), "top of the skull");
+        assert_eq!(skull_cell(b'X', 2.5, 6.5, 0.0), Some(WHITE), "no glow, no halo");
+        assert_eq!(skull_cell(b'.', 4.5, 6.5, 1.0), None);
+    }
+
+    #[test]
+    fn glow_covers_its_range_without_strobing() {
+        let at = |frame: u32| eye_glow(Duration::from_millis(50) * frame);
+        let values: Vec<f32> = (0..20 * 120).map(at).collect();
+        assert!(values.iter().all(|glow| (0.0..=1.0).contains(glow)));
+        assert!(values.iter().copied().fold(0.0, f32::max) > 0.8, "never gets bright");
+        assert!(values.iter().copied().fold(1.0, f32::min) < 0.2, "never gets dim");
+        let steepest = values.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0, f32::max);
+        assert!(steepest < 0.1, "jumps {steepest} per frame");
+    }
+
+    #[test]
+    fn animation_changes_the_eyes_but_nothing_else() {
+        let view = sample(Mode::Background, None);
+        let dim = render_at(&view, 190, 50, Duration::from_millis(2250));
+        let bright = render_at(&view, 190, 50, Duration::from_millis(750));
+        assert_ne!(dim, bright);
+        assert_eq!(text_of(&dim), text_of(&bright), "only colors may change");
+    }
+
+    #[test]
+    fn door_screen_is_not_animated() {
+        let view = sample(Mode::Door, None);
+        let first = render_at(&view, 190, 50, Duration::from_millis(750));
+        assert_eq!(first, render_at(&view, 190, 50, Duration::from_millis(2250)));
     }
 
     #[test]

@@ -331,6 +331,7 @@ fn run(setup: Setup, heartbeat: &AtomicU64) -> io::Result<()> {
         setup.door_duration,
     );
 
+    let started = Instant::now();
     while !stop.load(Ordering::SeqCst) {
         heartbeat.fetch_add(1, Ordering::Relaxed);
         let mut timeout = FRAME_TIME;
@@ -354,7 +355,7 @@ fn run(setup: Setup, heartbeat: &AtomicU64) -> io::Result<()> {
             }
         }
         app.tick(Instant::now());
-        terminal.draw(|frame| ui::draw(frame, &app.view()))?;
+        terminal.draw(|frame| ui::draw(frame, &app.view(), started.elapsed()))?;
     }
     Ok(())
 }

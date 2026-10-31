@@ -2,7 +2,7 @@
 
 Fullscreen terminal music player for a Halloween door kiosk.
 
-- **Dark green screen with a red-eyed skull:** background music, either a folder on shuffle or one looping file.
+- **Dark green screen with a skull and glowing eyes:** background music, either a folder on shuffle or one looping file.
 - **SPACE:** pauses it and plays the door song on a **red SPOOKY screen**.
 - **SPACE again, or the door song ending:** background music continues exactly where it stopped.
 
