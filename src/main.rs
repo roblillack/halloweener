@@ -12,7 +12,10 @@ use app::App;
 use audio::{Rodio, TrackSource};
 use crossterm::{
     cursor,
-    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+        MouseEventKind,
+    },
     execute,
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -50,7 +53,7 @@ Options:
                   Background volume relative to the door song, 0-100 (default: 33)
 
 Keys:
-  SPACE           Start the door song / go back to background music
+  SPACE or click  Start the door song / go back to background music
   + or =          Volume up
   -               Volume down
   Ctrl+Q          Quit (the only way out; everything else is ignored)
@@ -147,7 +150,7 @@ fn register_stop_signals(flag: &Arc<AtomicBool>) {
 
 fn reset_terminal() {
     let _ = terminal::disable_raw_mode();
-    let _ = execute!(io::stdout(), LeaveAlternateScreen, cursor::Show);
+    let _ = execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen, cursor::Show);
 }
 
 // -------------------------------------------------------------------- worker
@@ -305,6 +308,29 @@ fn start_hang_watchdog() -> Arc<AtomicU64> {
     heartbeat
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum Action {
+    Toggle,
+    VolumeUp,
+    VolumeDown,
+    Quit,
+    None,
+}
+
+fn action_for(event: &Event) -> Action {
+    match event {
+        Event::Mouse(mouse) if matches!(mouse.kind, MouseEventKind::Down(_)) => Action::Toggle,
+        Event::Key(key) if key.kind != KeyEventKind::Release => match key.code {
+            KeyCode::Char(' ') => Action::Toggle,
+            KeyCode::Char('+' | '=') => Action::VolumeUp,
+            KeyCode::Char('-') => Action::VolumeDown,
+            KeyCode::Char('q' | 'Q') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::Quit,
+            _ => Action::None,
+        },
+        _ => Action::None,
+    }
+}
+
 /// Restores the terminal however `run` ends, including by panic.
 struct ScreenGuard;
 impl Drop for ScreenGuard {
@@ -319,7 +345,7 @@ fn run(setup: Setup, heartbeat: &AtomicU64) -> io::Result<()> {
 
     terminal::enable_raw_mode()?;
     let _guard = ScreenGuard;
-    execute!(io::stdout(), EnterAlternateScreen, cursor::Hide)?;
+    execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture, cursor::Hide)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     terminal.clear()?;
 
@@ -337,21 +363,14 @@ fn run(setup: Setup, heartbeat: &AtomicU64) -> io::Result<()> {
         let mut timeout = FRAME_TIME;
         while event::poll(timeout)? {
             timeout = Duration::ZERO;
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Release {
-                    continue;
+            match action_for(&event::read()?) {
+                Action::Toggle => {
+                    app.on_toggle(Instant::now());
                 }
-                match key.code {
-                    KeyCode::Char(' ') => {
-                        app.on_space(Instant::now());
-                    }
-                    KeyCode::Char('+' | '=') => app.volume_up(),
-                    KeyCode::Char('-') => app.volume_down(),
-                    KeyCode::Char('q' | 'Q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        return Ok(());
-                    }
-                    _ => {}
-                }
+                Action::VolumeUp => app.volume_up(),
+                Action::VolumeDown => app.volume_down(),
+                Action::Quit => return Ok(()),
+                Action::None => {}
             }
         }
         app.tick(Instant::now());
@@ -366,6 +385,63 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|arg| arg.to_string()).collect()
+    }
+
+    fn mouse(kind: MouseEventKind) -> Event {
+        Event::Mouse(crossterm::event::MouseEvent {
+            kind,
+            column: 3,
+            row: 4,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    fn key(code: KeyCode, modifiers: KeyModifiers) -> Event {
+        Event::Key(crossterm::event::KeyEvent::new(code, modifiers))
+    }
+
+    #[test]
+    fn any_mouse_button_press_toggles() {
+        use crossterm::event::MouseButton::{Left, Middle, Right};
+        for button in [Left, Right, Middle] {
+            assert_eq!(action_for(&mouse(MouseEventKind::Down(button))), Action::Toggle);
+        }
+    }
+
+    #[test]
+    fn other_mouse_activity_is_ignored() {
+        use crossterm::event::MouseButton::Left;
+        for kind in [
+            MouseEventKind::Up(Left),
+            MouseEventKind::Drag(Left),
+            MouseEventKind::Moved,
+            MouseEventKind::ScrollUp,
+            MouseEventKind::ScrollDown,
+        ] {
+            assert_eq!(action_for(&mouse(kind)), Action::None, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn keys_map_to_their_actions() {
+        let none = KeyModifiers::NONE;
+        let ctrl = KeyModifiers::CONTROL;
+        assert_eq!(action_for(&key(KeyCode::Char(' '), none)), Action::Toggle);
+        assert_eq!(action_for(&key(KeyCode::Char('+'), none)), Action::VolumeUp);
+        assert_eq!(action_for(&key(KeyCode::Char('='), none)), Action::VolumeUp);
+        assert_eq!(action_for(&key(KeyCode::Char('-'), none)), Action::VolumeDown);
+        assert_eq!(action_for(&key(KeyCode::Char('q'), ctrl)), Action::Quit);
+        for ignored in [
+            key(KeyCode::Char('q'), none),
+            key(KeyCode::Char('c'), ctrl),
+            key(KeyCode::Esc, none),
+            key(KeyCode::Enter, none),
+        ] {
+            assert_eq!(action_for(&ignored), Action::None, "{ignored:?}");
+        }
+        let mut release = crossterm::event::KeyEvent::new(KeyCode::Char(' '), none);
+        release.kind = KeyEventKind::Release;
+        assert_eq!(action_for(&Event::Key(release)), Action::None);
     }
 
     #[test]

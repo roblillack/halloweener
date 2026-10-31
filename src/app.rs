@@ -9,10 +9,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// Ignore SPACE until the key has been quiet this long. Holding the key, or an
-/// excited double tap, must not flip the mode. It has to outlast the keyboard's
-/// initial auto-repeat delay (typically 250-660 ms).
-pub const SPACE_QUIET_TIME: Duration = Duration::from_millis(800);
+/// Ignore SPACE and clicks until they have been quiet this long, so a double click or
+/// the stream of auto-repeats from a held key doesn't flip the mode back and forth.
+/// If the keyboard's delay before auto-repeat starts is longer than this, holding
+/// SPACE does switch twice: once on the press, once on the first repeat.
+pub const SPACE_QUIET_TIME: Duration = Duration::from_millis(500);
 /// A playing track whose position stands still this long means dead audio output.
 const STALL_TIMEOUT: Duration = Duration::from_secs(4);
 const DEVICE_RETRY: Duration = Duration::from_secs(2);
@@ -106,8 +107,9 @@ impl<B: Backend> App<B> {
         self.backend.set_master_gain(master_gain(volume));
     }
 
-    /// Call for every SPACE press and auto-repeat. Returns whether it switched modes.
-    pub fn on_space(&mut self, now: Instant) -> bool {
+    /// Call for every SPACE press, auto-repeat and mouse click. Returns whether it
+    /// switched modes.
+    pub fn on_toggle(&mut self, now: Instant) -> bool {
         let quiet = self.last_space.is_none_or(|last| now.duration_since(last) >= SPACE_QUIET_TIME);
         self.last_space = Some(now);
         if quiet {
@@ -448,7 +450,7 @@ mod tests {
         fn space(&mut self) -> bool {
             self.now += Duration::from_secs(1);
             let now = self.now;
-            let switched = self.app.on_space(now);
+            let switched = self.app.on_toggle(now);
             self.tick();
             switched
         }
@@ -520,21 +522,48 @@ mod tests {
     }
 
     #[test]
-    fn holding_or_double_tapping_space_only_switches_once() {
+    fn double_click_within_the_quiet_time_only_switches_once() {
+        let mut rig = Rig::new("double", &["a.mp3"]);
+        rig.tick();
+        let start = rig.now;
+        assert!(rig.app.on_toggle(start));
+        assert!(!rig.app.on_toggle(start + Duration::from_millis(150)));
+        assert_eq!(rig.app.view().mode, Mode::Door);
+        // Released and pressed again later: works.
+        assert!(rig.app.on_toggle(start + Duration::from_millis(150) + SPACE_QUIET_TIME));
+        assert_eq!(rig.app.view().mode, Mode::Background);
+    }
+
+    #[test]
+    fn holding_space_switches_on_the_press_and_first_repeat_only() {
         let mut rig = Rig::new("hold", &["a.mp3"]);
         rig.tick();
         let start = rig.now;
-        assert!(rig.app.on_space(start));
-        // First auto-repeat after the OS delay, then a stream of repeats for ten seconds.
+        assert!(rig.app.on_toggle(start));
+        // With an OS repeat delay longer than the quiet time, the first repeat counts.
         let mut t = start + Duration::from_millis(600);
+        assert!(rig.app.on_toggle(t));
+        assert_eq!(rig.app.view().mode, Mode::Background);
+        // The stream of repeats that follows is ignored, however long it lasts.
         while t < start + SEC * 10 {
-            assert!(!rig.app.on_space(t));
+            t += Duration::from_millis(30);
+            assert!(!rig.app.on_toggle(t));
+        }
+        assert_eq!(rig.app.view().mode, Mode::Background);
+    }
+
+    #[test]
+    fn holding_space_switches_once_if_repeat_starts_within_the_quiet_time() {
+        let mut rig = Rig::new("hold-short", &["a.mp3"]);
+        rig.tick();
+        let start = rig.now;
+        assert!(rig.app.on_toggle(start));
+        let mut t = start + Duration::from_millis(400);
+        while t < start + SEC * 10 {
+            assert!(!rig.app.on_toggle(t));
             t += Duration::from_millis(30);
         }
         assert_eq!(rig.app.view().mode, Mode::Door);
-        // Released and pressed again later: works.
-        assert!(rig.app.on_space(t + SPACE_QUIET_TIME));
-        assert_eq!(rig.app.view().mode, Mode::Background);
     }
 
     #[test]

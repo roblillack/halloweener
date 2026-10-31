@@ -22,14 +22,35 @@ const RED_SHADOW: Color = Color::Indexed(52);
 
 const ART_HEIGHT: usize = 6;
 
-const SPOOKY: [&str; ART_HEIGHT] = [
-    "███████╗██████╗  ██████╗  ██████╗ ██╗  ██╗██╗   ██╗",
-    "██╔════╝██╔══██╗██╔═══██╗██╔═══██╗██║ ██╔╝╚██╗ ██╔╝",
-    "███████╗██████╔╝██║   ██║██║   ██║█████╔╝  ╚████╔╝ ",
-    "╚════██║██╔═══╝ ██║   ██║██║   ██║██╔═██╗   ╚██╔╝  ",
-    "███████║██║     ╚██████╔╝╚██████╔╝██║  ██╗   ██║   ",
-    "╚══════╝╚═╝      ╚═════╝  ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ",
+type Glyph = [&'static str; ART_HEIGHT];
+
+const S: Glyph = ["███████╗", "██╔════╝", "███████╗", "╚════██║", "███████║", "╚══════╝"];
+const P: Glyph = ["██████╗ ", "██╔══██╗", "██████╔╝", "██╔═══╝ ", "██║     ", "╚═╝     "];
+const O: Glyph = [" ██████╗ ", "██╔═══██╗", "██║   ██║", "██║   ██║", "╚██████╔╝", " ╚═════╝ "];
+const K: Glyph = ["██╗  ██╗", "██║ ██╔╝", "█████╔╝ ", "██╔═██╗ ", "██║  ██╗", "╚═╝  ╚═╝"];
+const Y: Glyph = ["██╗   ██╗", "╚██╗ ██╔╝", " ╚████╔╝ ", "  ╚██╔╝  ", "   ██║   ", "   ╚═╝   "];
+const C: Glyph = [" ██████╗", "██╔════╝", "██║     ", "██║     ", "╚██████╗", " ╚═════╝"];
+const A: Glyph = [" █████╗ ", "██╔══██╗", "███████║", "██╔══██║", "██║  ██║", "╚═╝  ╚═╝"];
+const R: Glyph = ["██████╗ ", "██╔══██╗", "██████╔╝", "██╔══██╗", "██║  ██║", "╚═╝  ╚═╝"];
+const E: Glyph = ["███████╗", "██╔════╝", "█████╗  ", "██╔══╝  ", "███████╗", "╚══════╝"];
+const L: Glyph = ["██╗     ", "██║     ", "██║     ", "██║     ", "███████╗", "╚══════╝"];
+const T: Glyph = ["████████╗", "╚══██╔══╝", "   ██║   ", "   ██║   ", "   ██║   ", "   ╚═╝   "];
+const N: Glyph = ["███╗   ██╗", "████╗  ██║", "██╔██╗ ██║", "██║╚██╗██║", "██║ ╚████║", "╚═╝  ╚═══╝"];
+
+struct Word {
+    name: &'static str,
+    letters: &'static [Glyph],
+}
+
+const WORDS: [Word; 3] = [
+    Word { name: "SPOOKY", letters: &[S, P, O, O, K, Y] },
+    Word { name: "SCARY", letters: &[S, C, A, R, Y] },
+    Word { name: "SKELETONS", letters: &[S, K, E, L, E, T, O, N, S] },
 ];
+const WORD_TIME_MILLIS: u128 = 750;
+const WOBBLE_PERIOD_SECS: f32 = 0.8;
+/// How far the wave has moved on from one letter to the next, in radians.
+const WOBBLE_LETTER_PHASE: f32 = 0.9;
 
 const DIGITS: [[&str; ART_HEIGHT]; 10] = [
     [" ██████╗ ", "██╔═████╗", "██║██╔██║", "████╔╝██║", "╚██████╔╝", " ╚═════╝ "],
@@ -201,6 +222,85 @@ fn scaled_art<S: AsRef<str>>(art: &[S], scale: usize, face: Color, shadow: Color
     lines
 }
 
+fn word_width(word: &Word) -> usize {
+    word.letters.iter().map(|letter| letter[0].chars().count()).sum()
+}
+
+/// Draws a word into a grid of `rows` lines, with each letter bobbing up and down
+/// along a wave of up to `wobble` rows. `rows` must leave room for that.
+fn wobbling_word(word: &Word, scale: usize, rows: usize, wobble: usize, position: Duration) -> Vec<Line<'static>> {
+    let mut grid = vec![vec![(' ', WHITE); word_width(word) * scale]; rows];
+    let top = rows.saturating_sub(ART_HEIGHT * scale) / 2;
+    let angle = position.as_secs_f32() * std::f32::consts::TAU / WOBBLE_PERIOD_SECS;
+    let mut left = 0;
+    for (index, letter) in word.letters.iter().enumerate() {
+        let wave = (angle + index as f32 * WOBBLE_LETTER_PHASE).sin();
+        let offset = (wave * wobble as f32).round() as isize;
+        for (row, text) in letter.iter().enumerate() {
+            for (column, c) in text.chars().enumerate() {
+                let cell = match c {
+                    '█' | ' ' => (c, WHITE),
+                    _ if scale == 1 => (c, WHITE),
+                    _ => ('█', RED_SHADOW),
+                };
+                for y in 0..scale {
+                    for x in 0..scale {
+                        let line = (top + row * scale + y) as isize + offset;
+                        if let Some(target) = usize::try_from(line).ok().and_then(|line| grid.get_mut(line)) {
+                            target[left + column * scale + x] = cell;
+                        }
+                    }
+                }
+            }
+        }
+        left += letter[0].chars().count() * scale;
+    }
+    grid.into_iter().map(grid_line).collect()
+}
+
+fn grid_line(cells: Vec<(char, Color)>) -> Line<'static> {
+    let mut spans = Vec::new();
+    let mut run = String::new();
+    let mut run_color = WHITE;
+    for (c, color) in cells {
+        if color != run_color && !run.is_empty() {
+            spans.push(Span::styled(std::mem::take(&mut run), Style::new().fg(run_color)));
+        }
+        run_color = color;
+        run.push(c);
+    }
+    spans.push(Span::styled(run, Style::new().fg(run_color)));
+    Line::from(spans)
+}
+
+/// The door banner. Its height depends only on the screen, never on the current
+/// word, so everything below it stays still. Driven by the song position, so each
+/// door song starts on the first word.
+fn banner(position: Duration, width: usize, room: usize) -> Vec<Line<'static>> {
+    let bold = Style::new().add_modifier(Modifier::BOLD);
+    let index = (position.as_millis() / WORD_TIME_MILLIS) as usize % WORDS.len();
+    let word = &WORDS[index];
+
+    let max_scale = WORDS
+        .iter()
+        .map(|word| fit_scale(word_width(word), ART_HEIGHT, width, room / 2, usize::MAX))
+        .max()
+        .unwrap_or(0);
+    if max_scale == 0 {
+        return vec![text_line(fit_text(word.name, width), bold)];
+    }
+    let wobble = if max_scale >= 2 { 2 } else { 1 };
+    let rows = ART_HEIGHT * max_scale + 2 * wobble;
+    let scale = (width / word_width(word)).min(max_scale);
+    if scale == 0 {
+        // This word is too wide for art, though another one fits.
+        let mut lines = vec![Line::default(); rows];
+        lines[rows / 2] = text_line(fit_text(word.name, width), bold);
+        return lines;
+    }
+    wobbling_word(word, scale, rows, wobble, position)
+}
+
 /// Cuts text to a display width, counting double-width characters properly.
 fn fit_text(text: &str, max: usize) -> String {
     let total: usize = text.chars().map(|c| c.width().unwrap_or(0)).sum();
@@ -318,7 +418,7 @@ fn background_screen(view: &View, width: usize, height: usize, elapsed: Duration
     lines.push(volume_line(view, width));
     lines.push(Line::default());
     lines.push(Line::default());
-    lines.push(hint_line("Press SPACE to start the DOOR SONG", width, WHITE, GREEN_BG));
+    lines.push(hint_line("Press SPACE or click to start the DOOR SONG", width, WHITE, GREEN_BG));
     lines
 }
 
@@ -329,15 +429,9 @@ fn door_screen(view: &View, width: usize, height: usize) -> Vec<Line<'static>> {
     let room = height.saturating_sub(lines.len() + RESERVED);
     let usable_width = width.saturating_sub(2);
 
-    let banner_scale = fit_scale(art_width(&SPOOKY), ART_HEIGHT, usable_width, room / 2, usize::MAX);
-    if banner_scale > 0 {
-        lines.extend(scaled_art(&SPOOKY, banner_scale, WHITE, RED_SHADOW));
-    } else {
-        lines.push(text_line(
-            fit_text("SPOOKY", width),
-            Style::new().add_modifier(Modifier::BOLD),
-        ));
-    }
+    let banner_lines = banner(view.position, usable_width, room);
+    let banner_rows = banner_lines.len();
+    lines.extend(banner_lines);
     lines.push(Line::default());
     lines.push(text_line(
         fit_text(view.title.unwrap_or("-"), width.saturating_sub(4)),
@@ -347,7 +441,7 @@ fn door_screen(view: &View, width: usize, height: usize) -> Vec<Line<'static>> {
 
     let time_text = format_time(view.position);
     let time = big_time(&time_text);
-    let time_room = room.saturating_sub(banner_scale * ART_HEIGHT);
+    let time_room = room.saturating_sub(banner_rows);
     let time_scale = fit_scale(art_width(&time), ART_HEIGHT, usable_width, time_room, usize::MAX);
     if time_scale > 0 {
         lines.extend(scaled_art(&time, time_scale, YELLOW, RED_SHADOW));
@@ -360,7 +454,7 @@ fn door_screen(view: &View, width: usize, height: usize) -> Vec<Line<'static>> {
     }
     lines.push(volume_line(view, width));
     lines.push(Line::default());
-    lines.push(hint_line("Press SPACE to go back to background music", width, BLACK, WHITE));
+    lines.push(hint_line("Press SPACE or click to go back to background music", width, BLACK, WHITE));
     lines
 }
 
@@ -400,7 +494,8 @@ mod tests {
 
     #[test]
     fn art_rows_are_rectangular() {
-        for art in std::iter::once(&SPOOKY).chain(std::iter::once(&COLON)).chain(DIGITS.iter()) {
+        let letters = WORDS.iter().flat_map(|word| word.letters.iter());
+        for art in letters.chain(std::iter::once(&COLON)).chain(DIGITS.iter()) {
             assert!(art.iter().all(|row| row.chars().count() == art[0].chars().count()), "{art:?}");
         }
         for digit in &DIGITS {
@@ -432,14 +527,16 @@ mod tests {
     }
 
     #[test]
-    fn door_screen_has_big_spooky_on_a_laptop_sized_terminal() {
-        let buffer = render(&sample(Mode::Door, None), 190, 50);
-        let text = text_of(&buffer);
-        // Scale 2+ replaces the box-drawing characters with a solid shadow.
-        let filled = text.matches('█').count();
-        assert!(filled > 1500, "only {filled} block cells");
-        assert!(text.contains("SPACE"));
-        assert!(text.contains("01:23"));
+    fn door_screen_has_big_words_on_a_laptop_sized_terminal() {
+        for millis in [0, 750, 1500] {
+            let buffer = render(&door_at(millis), 190, 50);
+            let text = text_of(&buffer);
+            // Scale 2+ replaces the box-drawing characters with a solid shadow.
+            let filled = text.matches('█').count();
+            assert!(filled > 1500, "only {filled} block cells at {millis} ms");
+            assert!(text.contains("SPACE"));
+            assert!(text.contains("00:0"));
+        }
     }
 
     #[test]
@@ -507,11 +604,97 @@ mod tests {
         assert_eq!(text_of(&dim), text_of(&bright), "only colors may change");
     }
 
+    fn door_at(millis: u64) -> View<'static> {
+        View { position: Duration::from_millis(millis), ..sample(Mode::Door, None) }
+    }
+
+    /// Finds a word by a piece of art only it has, on a screen where art isn't enlarged.
+    fn shown_word(millis: u64) -> &'static str {
+        let text = text_of(&render(&door_at(millis), 80, 24));
+        let found: Vec<_> = [("SPOOKY", "██╔═══╝ "), ("SCARY", "╚██████╗"), ("SKELETONS", "████████╗")]
+            .into_iter()
+            .filter(|(_, piece)| text.contains(piece))
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(found.len(), 1, "at {millis} ms: {found:?}");
+        found[0]
+    }
+
     #[test]
-    fn door_screen_is_not_animated() {
-        let view = sample(Mode::Door, None);
-        let first = render_at(&view, 190, 50, Duration::from_millis(750));
-        assert_eq!(first, render_at(&view, 190, 50, Duration::from_millis(2250)));
+    fn door_words_take_turns_starting_with_spooky() {
+        assert_eq!(shown_word(0), "SPOOKY");
+        assert_eq!(shown_word(749), "SPOOKY");
+        assert_eq!(shown_word(750), "SCARY");
+        assert_eq!(shown_word(1500), "SKELETONS");
+        assert_eq!(shown_word(2250), "SPOOKY");
+    }
+
+    #[test]
+    fn every_word_is_used_in_sizes_that_fit() {
+        for word in &WORDS {
+            for width in [80, 120, 190, 300] {
+                let scale = fit_scale(word_width(word), ART_HEIGHT, width, 100, usize::MAX);
+                assert!(scale >= 1 && word_width(word) * scale <= width, "{} at {width}", word.name);
+            }
+        }
+        assert_eq!(word_width(&WORDS[0]), 51);
+        assert_eq!(word_width(&WORDS[1]), 41);
+        assert_eq!(word_width(&WORDS[2]), 76);
+    }
+
+    #[test]
+    fn wobble_moves_letters_without_cutting_them_off() {
+        let filled = |lines: &[Line]| -> usize {
+            lines.iter().flat_map(|line| &line.spans).map(|span| span.content.matches('█').count()).sum()
+        };
+        for word in &WORDS {
+            let still = filled(&wobbling_word(word, 2, 16, 0, Duration::ZERO));
+            let mut shapes = std::collections::HashSet::new();
+            for millis in (0..800).step_by(50) {
+                let lines = wobbling_word(word, 2, 16, 2, Duration::from_millis(millis));
+                assert_eq!(lines.len(), 16);
+                assert_eq!(filled(&lines), still, "{} clipped at {millis} ms", word.name);
+                shapes.insert(format!("{lines:?}"));
+            }
+            assert!(shapes.len() > 3, "{} barely moves", word.name);
+        }
+    }
+
+    #[test]
+    fn letters_do_not_all_move_together() {
+        let word = &WORDS[0];
+        let lines = wobbling_word(word, 1, 8, 1, Duration::from_millis(100));
+        let top_row_used = |column: usize| {
+            lines.iter().position(|line| {
+                line.spans.iter().flat_map(|span| span.content.chars()).nth(column).is_some_and(|c| c != ' ')
+            })
+        };
+        // First column of each of the first and fourth letters.
+        assert_ne!(top_row_used(0), top_row_used(8 + 8 + 9 + 1));
+    }
+
+    #[test]
+    fn door_layout_stays_put_while_words_change() {
+        let row_of = |millis, needle: &str| {
+            let buffer = render(&door_at(millis), 190, 50);
+            (0..50u16)
+                .find(|&y| {
+                    (0..190u16).map(|x| buffer[(x, y)].symbol()).collect::<String>().contains(needle)
+                })
+                .unwrap()
+        };
+        for millis in [0, 100, 300, 750, 1000, 1500, 1900] {
+            assert_eq!(row_of(millis, "left)"), row_of(0, "left)"), "{millis}");
+            assert_eq!(row_of(millis, "Press SPACE"), row_of(0, "Press SPACE"), "{millis}");
+        }
+    }
+
+    #[test]
+    fn narrow_screen_falls_back_to_plain_words() {
+        for (millis, word) in [(0, "SPOOKY"), (750, "SCARY"), (1500, "SKELETONS")] {
+            assert!(text_of(&render(&door_at(millis), 45, 30)).contains(word) || word == "SCARY");
+            assert!(text_of(&render(&door_at(millis), 30, 12)).contains(word), "{word}");
+        }
     }
 
     #[test]

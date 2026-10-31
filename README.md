@@ -3,8 +3,8 @@
 Fullscreen terminal music player for a Halloween door kiosk.
 
 - **Dark green screen with a skull and glowing eyes:** background music, either a folder on shuffle or one looping file.
-- **SPACE:** pauses it and plays the door song on a **red SPOOKY screen**.
-- **SPACE again, or the door song ending:** background music continues exactly where it stopped.
+- **SPACE or a mouse click:** pauses it and plays the door song on a **red screen** with SPOOKY, SCARY and SKELETONS taking turns in large wobbling letters.
+- **SPACE or a click again, or the door song ending:** background music continues exactly where it stopped.
 
 ## Run
 
@@ -44,13 +44,15 @@ saved: every start, including an automatic restart after a crash, begins at 100%
 
 | Key      | Action                                                |
 |----------|-------------------------------------------------------|
-| `SPACE`  | Start the door song / go back to background music      |
+| `SPACE` or click | Start the door song / go back to background music |
 | `+`, `=` | Volume up                                              |
 | `-`      | Volume down                                            |
 | `Ctrl+Q` | Quit. Deliberately not shown on screen                 |
 
-Everything else, including `Ctrl+C`, is ignored. SPACE only registers after the key
-has been quiet for 0.8 s, so holding it or double-tapping switches once.
+Everything else, including `Ctrl+C` and scrolling, is ignored. SPACE and clicks only
+register after 0.5 s of quiet, so a double-click switches once. Holding SPACE also
+switches once, as long as the keyboard's repeat delay is under 0.5 s. With a longer
+delay it switches twice, so set it to about 400 ms on the kiosk.
 
 ## What happens when things go wrong
 
